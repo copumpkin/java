@@ -1,282 +1,285 @@
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveFunctor #-}
 {-# OPTIONS_GHC -fcontext-stack=250 #-}
 module Java.Bytecode.Encoding where
-
 import Data.Int
 import Data.Word
 import Data.Monoid
 import qualified Data.Vector as V
 import qualified Data.Vector.Unboxed as U
 import qualified Data.ByteString as B
-import Data.Binary hiding (encode)
-import Data.Binary.Get
+import Data.Binary.Get hiding (Partial)
 import Data.Binary.Builder
 import Control.Applicative
 import Data.Prickler
-
 import Java.Bytecode.Raw
 
-word8  = Prickler getWord8 singleton
-word16 = Prickler getWord16be putWord16be
-word32 = Prickler getWord32be putWord32be
-
-int8  = wrap fromIntegral fromIntegral word8
-int16 = wrap fromIntegral fromIntegral word16
-int32 = wrap fromIntegral fromIntegral word32
-
 con1    = wrap Con1    getCon1    word8
-con2    = wrap Con2    getCon2    word16
+con2    = wrap Con2    getCon2    word16be
 var1    = wrap Var1    getVar1    word8
-var2    = wrap Var2    getVar2    word16
-offset2 = wrap Offset2 getOffset2 int16
-offset4 = wrap Offset4 getOffset4 int32
+var2    = wrap Var2    getVar2    word16be
+offset2 = wrap Offset2 getOffset2 int16be
+offset4 = wrap Offset4 getOffset4 int32be
 
-uvector :: (Integral i, U.Unbox a) => Prickler i -> Prickler a -> Prickler (U.Vector a)
-uvector (Prickler gl pl) (Prickler ga pa) = Prickler getter builder
+tableswitch :: Partial Put Get Instruction '[ Offset4, Int32, U.Vector Offset4 ]
+tableswitch = Partial getter putter Tableswitch
   where
-  getter = do len <- gl; U.replicateM (fromIntegral len) ga
-  builder xs = pl (fromIntegral (U.length xs)) <> U.foldr' ((<>) . pa) mempty xs -- where's my foldMap??
+  getter = alignedGet 4 $ do
+    def  <- get offset4
+    low  <- get int32be
+    high <- get int32be
+    offs <- U.replicateM (fromIntegral $ high - low + 1) (get offset4)
+    return $ Tableswitch def low offs
 
-tableswitch :: Prickler Table
-tableswitch = undefined
+  putter def low offs = alignedPut 4 $ put offset4 def <> put int32be low <> put int32be (low + fromIntegral (U.length offs) + 1) <> U.foldr' ((<>) . put offset4) mempty offs
 
-lookupswitch :: Prickler Lookup
-lookupswitch = undefined
+
+lookupswitch :: Partial Put Get Instruction '[ Offset4, U.Vector (Int32, Offset4) ]
+lookupswitch = Partial getter putter Lookupswitch
+  where
+  getter = alignedGet 4 $ do
+    def   <- get offset4
+    len   <- get int32be
+    pairs <- U.replicateM (fromIntegral len) (liftA2 (,) (get int32be) (get offset4))
+    return $ Lookupswitch def pairs
+
+  putPair = put (pair int32be offset4)
+  putter def pairs = alignedPut 4 $ put offset4 def <> put int32be (fromIntegral (U.length pairs)) <> U.foldr' ((<>) . putPair) mempty pairs
 
 primType :: Prickler PrimType
-primType = taggedData word8 $ Data (EliminatorWrapper . elim_PrimType) $
-     0x04 # Case T_Boolean Nil
-  :> 0x05 # Case T_Char    Nil
-  :> 0x06 # Case T_Float   Nil
-  :> 0x07 # Case T_Double  Nil
-  :> 0x08 # Case T_Byte    Nil
-  :> 0x09 # Case T_Short   Nil
-  :> 0x0a # Case T_Int     Nil
-  :> 0x0b # Case T_Long    Nil
+primType = tagged word8 (EliminatorWrapper . elim_PrimType)
+  $  0x04 # alt T_Boolean Nil
+  :> 0x05 # alt T_Char    Nil
+  :> 0x06 # alt T_Float   Nil
+  :> 0x07 # alt T_Double  Nil
+  :> 0x08 # alt T_Byte    Nil
+  :> 0x09 # alt T_Short   Nil
+  :> 0x0a # alt T_Int     Nil
+  :> 0x0b # alt T_Long    Nil
   :> Nil
 
 wideInstruction :: Prickler WideInstruction
-wideInstruction = taggedData word8 $ Data (EliminatorWrapper . elim_WideInstruction) $
-     0x15 # Case Iload_w  (var2 :> Nil)
-  :> 0x16 # Case Fload_w  (var2 :> Nil)
-  :> 0x17 # Case Aload_w  (var2 :> Nil)
-  :> 0x18 # Case Lload_w  (var2 :> Nil)
-  :> 0x19 # Case Dload_w  (var2 :> Nil)
-  :> 0x36 # Case Istore_w (var2 :> Nil)
-  :> 0x37 # Case Fstore_w (var2 :> Nil)
-  :> 0x38 # Case Astore_w (var2 :> Nil)
-  :> 0x39 # Case Lstore_w (var2 :> Nil)
-  :> 0x3a # Case Dstore_w (var2 :> Nil)
-  :> 0xa9 # Case Ret_w    (var2 :> Nil)
-  :> 0x84 # Case Iinc_w   (var2 :> int16 :> Nil)
+wideInstruction = tagged word8 (EliminatorWrapper . elim_WideInstruction)
+  $  0x15 # alt Iload_w  (var2 :> Nil)
+  :> 0x16 # alt Fload_w  (var2 :> Nil)
+  :> 0x17 # alt Aload_w  (var2 :> Nil)
+  :> 0x18 # alt Lload_w  (var2 :> Nil)
+  :> 0x19 # alt Dload_w  (var2 :> Nil)
+  :> 0x36 # alt Istore_w (var2 :> Nil)
+  :> 0x37 # alt Fstore_w (var2 :> Nil)
+  :> 0x38 # alt Astore_w (var2 :> Nil)
+  :> 0x39 # alt Lstore_w (var2 :> Nil)
+  :> 0x3a # alt Dstore_w (var2 :> Nil)
+  :> 0xa9 # alt Ret_w    (var2 :> Nil)
+  :> 0x84 # alt Iinc_w   (var2 :> int16be :> Nil)
   :> Nil
 
+-- My condolences to anyone who causes a type error in this expression
 instruction :: Prickler Instruction
-instruction = taggedData word8 $ Data (EliminatorWrapper . elim_Instruction) $
-     0x00 # Case Nop             Nil      
-  :> 0x01 # Case Aconst_null     Nil
-  :> 0x02 # Case Iconst_m1       Nil   
-  :> 0x03 # Case Iconst_0        Nil   
-  :> 0x04 # Case Iconst_1        Nil   
-  :> 0x05 # Case Iconst_2        Nil   
-  :> 0x06 # Case Iconst_3        Nil   
-  :> 0x07 # Case Iconst_4        Nil   
-  :> 0x08 # Case Iconst_5        Nil   
-  :> 0x09 # Case Lconst_0        Nil   
-  :> 0x0a # Case Lconst_1        Nil   
-  :> 0x0b # Case Fconst_0        Nil   
-  :> 0x0c # Case Fconst_1        Nil   
-  :> 0x0d # Case Fconst_2        Nil   
-  :> 0x0e # Case Dconst_0        Nil   
-  :> 0x0f # Case Dconst_1        Nil   
-  :> 0x10 # Case Bipush          (word8 :> Nil)    
-  :> 0x11 # Case Sipush          (word16 :> Nil)    
-  :> 0x12 # Case Ldc             (con1 :> Nil)    
-  :> 0x13 # Case Ldc_w           (con2 :> Nil)    
-  :> 0x14 # Case Ldc2_w          (con2 :> Nil)    
-  :> 0x15 # Case Iload           (var1 :> Nil)
-  :> 0x16 # Case Lload           (var1 :> Nil)
-  :> 0x17 # Case Fload           (var1 :> Nil)
-  :> 0x18 # Case Dload           (var1 :> Nil)
-  :> 0x19 # Case Aload           (var1 :> Nil)
-  :> 0x1a # Case Iload_0         Nil  
-  :> 0x1b # Case Iload_1         Nil  
-  :> 0x1c # Case Iload_2         Nil  
-  :> 0x1d # Case Iload_3         Nil  
-  :> 0x1e # Case Lload_0         Nil  
-  :> 0x1f # Case Lload_1         Nil  
-  :> 0x20 # Case Lload_2         Nil  
-  :> 0x21 # Case Lload_3         Nil  
-  :> 0x22 # Case Fload_0         Nil  
-  :> 0x23 # Case Fload_1         Nil  
-  :> 0x24 # Case Fload_2         Nil  
-  :> 0x25 # Case Fload_3         Nil  
-  :> 0x26 # Case Dload_0         Nil  
-  :> 0x27 # Case Dload_1         Nil  
-  :> 0x28 # Case Dload_2         Nil  
-  :> 0x29 # Case Dload_3         Nil  
-  :> 0x2a # Case Aload_0         Nil  
-  :> 0x2b # Case Aload_1         Nil  
-  :> 0x2c # Case Aload_2         Nil  
-  :> 0x2d # Case Aload_3         Nil  
-  :> 0x2e # Case Iaload          Nil  
-  :> 0x2f # Case Laload          Nil  
-  :> 0x30 # Case Faload          Nil  
-  :> 0x31 # Case Daload          Nil  
-  :> 0x32 # Case Aaload          Nil  
-  :> 0x33 # Case Baload          Nil  
-  :> 0x34 # Case Caload          Nil  
-  :> 0x35 # Case Saload          Nil  
-  :> 0x36 # Case Istore          (var1 :> Nil)
-  :> 0x37 # Case Lstore          (var1 :> Nil)   
-  :> 0x38 # Case Fstore          (var1 :> Nil)  
-  :> 0x39 # Case Dstore          (var1 :> Nil)  
-  :> 0x3a # Case Astore          (var1 :> Nil)  
-  :> 0x3b # Case Istore_0        Nil 
-  :> 0x3c # Case Istore_1        Nil 
-  :> 0x3d # Case Istore_2        Nil 
-  :> 0x3e # Case Istore_3        Nil 
-  :> 0x3f # Case Lstore_0        Nil 
-  :> 0x40 # Case Lstore_1        Nil 
-  :> 0x41 # Case Lstore_2        Nil 
-  :> 0x42 # Case Lstore_3        Nil 
-  :> 0x43 # Case Fstore_0        Nil 
-  :> 0x44 # Case Fstore_1        Nil 
-  :> 0x45 # Case Fstore_2        Nil 
-  :> 0x46 # Case Fstore_3        Nil 
-  :> 0x47 # Case Dstore_0        Nil 
-  :> 0x48 # Case Dstore_1        Nil 
-  :> 0x49 # Case Dstore_2        Nil 
-  :> 0x4a # Case Dstore_3        Nil 
-  :> 0x4b # Case Astore_0        Nil 
-  :> 0x4c # Case Astore_1        Nil 
-  :> 0x4d # Case Astore_2        Nil 
-  :> 0x4e # Case Astore_3        Nil 
-  :> 0x4f # Case Iastore         Nil 
-  :> 0x50 # Case Lastore         Nil 
-  :> 0x51 # Case Fastore         Nil 
-  :> 0x52 # Case Dastore         Nil 
-  :> 0x53 # Case Aastore         Nil 
-  :> 0x54 # Case Bastore         Nil 
-  :> 0x55 # Case Castore         Nil 
-  :> 0x56 # Case Sastore         Nil 
-  :> 0x57 # Case Pop             Nil 
-  :> 0x58 # Case Pop2            Nil 
-  :> 0x59 # Case Dup             Nil 
-  :> 0x5a # Case Dup_x1          Nil 
-  :> 0x5b # Case Dup_x2          Nil 
-  :> 0x5c # Case Dup2            Nil 
-  :> 0x5d # Case Dup2_x1         Nil 
-  :> 0x5e # Case Dup2_x2         Nil 
-  :> 0x5f # Case Swap            Nil 
-  :> 0x60 # Case Iadd            Nil 
-  :> 0x61 # Case Ladd            Nil 
-  :> 0x62 # Case Fadd            Nil 
-  :> 0x63 # Case Dadd            Nil 
-  :> 0x64 # Case Isub            Nil 
-  :> 0x65 # Case Lsub            Nil 
-  :> 0x66 # Case Fsub            Nil 
-  :> 0x67 # Case Dsub            Nil 
-  :> 0x68 # Case Imul            Nil 
-  :> 0x69 # Case Lmul            Nil 
-  :> 0x6a # Case Fmul            Nil 
-  :> 0x6b # Case Dmul            Nil 
-  :> 0x6c # Case Idiv            Nil 
-  :> 0x6d # Case Ldiv            Nil 
-  :> 0x6e # Case Fdiv            Nil 
-  :> 0x6f # Case Ddiv            Nil 
-  :> 0x70 # Case Irem            Nil 
-  :> 0x71 # Case Lrem            Nil 
-  :> 0x72 # Case Frem            Nil 
-  :> 0x73 # Case Drem            Nil 
-  :> 0x74 # Case Ineg            Nil 
-  :> 0x75 # Case Lneg            Nil 
-  :> 0x76 # Case Fneg            Nil 
-  :> 0x77 # Case Dneg            Nil 
-  :> 0x78 # Case Ishl            Nil 
-  :> 0x79 # Case Lshl            Nil 
-  :> 0x7a # Case Ishr            Nil 
-  :> 0x7b # Case Lshr            Nil 
-  :> 0x7c # Case Iushr           Nil 
-  :> 0x7d # Case Lushr           Nil 
-  :> 0x7e # Case Iand            Nil 
-  :> 0x7f # Case Land            Nil 
-  :> 0x80 # Case Ior             Nil 
-  :> 0x81 # Case Lor             Nil 
-  :> 0x82 # Case Ixor            Nil 
-  :> 0x83 # Case Lxor            Nil 
-  :> 0x84 # Case Iinc            (var1 :> int8 :> Nil)  
-  :> 0x85 # Case I2l             Nil   
-  :> 0x86 # Case I2f             Nil   
-  :> 0x87 # Case I2d             Nil   
-  :> 0x88 # Case L2i             Nil   
-  :> 0x89 # Case L2f             Nil   
-  :> 0x8a # Case L2d             Nil   
-  :> 0x8b # Case F2i             Nil   
-  :> 0x8c # Case F2l             Nil   
-  :> 0x8d # Case F2d             Nil   
-  :> 0x8e # Case D2i             Nil   
-  :> 0x8f # Case D2l             Nil   
-  :> 0x90 # Case D2f             Nil   
-  :> 0x91 # Case I2b             Nil   
-  :> 0x92 # Case I2c             Nil   
-  :> 0x93 # Case I2s             Nil   
-  :> 0x94 # Case Lcmp            Nil   
-  :> 0x95 # Case Fcmpl           Nil   
-  :> 0x96 # Case Fcmpg           Nil   
-  :> 0x97 # Case Dcmpl           Nil   
-  :> 0x98 # Case Dcmpg           Nil   
-  :> 0x99 # Case Ifeq            (offset2 :> Nil)  
-  :> 0x9a # Case Ifne            (offset2 :> Nil)  
-  :> 0x9b # Case Iflt            (offset2 :> Nil)  
-  :> 0x9c # Case Ifge            (offset2 :> Nil)  
-  :> 0x9d # Case Ifgt            (offset2 :> Nil)  
-  :> 0x9e # Case Ifle            (offset2 :> Nil)  
-  :> 0x9f # Case If_icmpeq       (offset2 :> Nil)  
-  :> 0xa0 # Case If_icmpne       (offset2 :> Nil)  
-  :> 0xa1 # Case If_icmplt       (offset2 :> Nil)  
-  :> 0xa2 # Case If_icmpge       (offset2 :> Nil)  
-  :> 0xa3 # Case If_icmpgt       (offset2 :> Nil)  
-  :> 0xa4 # Case If_icmple       (offset2 :> Nil)  
-  :> 0xa5 # Case If_acmpeq       (offset2 :> Nil)  
-  :> 0xa6 # Case If_acmpne       (offset2 :> Nil)  
-  :> 0xa7 # Case Goto            (offset2 :> Nil)     
-  :> 0xa8 # Case Jsr             (offset2 :> Nil)     
-  :> 0xa9 # Case Ret             (var1 :> Nil)     
-  :> 0xaa # Case Tableswitch     (tableswitch :> Nil)
-  :> 0xab # Case Lookupswitch    (lookupswitch :> Nil)   
-  :> 0xac # Case Ireturn         Nil   
-  :> 0xad # Case Lreturn         Nil   
-  :> 0xae # Case Freturn         Nil   
-  :> 0xaf # Case Dreturn         Nil   
-  :> 0xb0 # Case Areturn         Nil   
-  :> 0xb1 # Case Return          Nil   
-  :> 0xb2 # Case Getstatic       (con2 :> Nil)
-  :> 0xb3 # Case Putstatic       (con2 :> Nil)
-  :> 0xb4 # Case Getfield        (con2 :> Nil)
-  :> 0xb5 # Case Putfield        (con2 :> Nil)
-  :> 0xb6 # Case Invokevirtual   (con2 :> Nil)
-  :> 0xb7 # Case Invokespecial   (con2 :> Nil)
-  :> 0xb8 # Case Invokestatic    (con2 :> Nil)
-  :> 0xb9 # Case Invokeinterface (con2 :> Nil)
-  :> 0xba # Case Invokedynamic   (con2 :> Nil)
-  :> 0xbb # Case New             (con2 :> Nil)
-  :> 0xbc # Case Newarray        (primType :> Nil) 
-  :> 0xbd # Case Anewarray       (con2 :> Nil)  
-  :> 0xbe # Case Arraylength     Nil   
-  :> 0xbf # Case Athrow          Nil   
-  :> 0xc0 # Case Checkcast       (con2 :> Nil) 
-  :> 0xc1 # Case Instanceof      (con2 :> Nil) 
-  :> 0xc2 # Case Monitorenter    Nil   
-  :> 0xc3 # Case Monitorexit     Nil   
-  :> 0xc4 # Case Wide            (wideInstruction :> Nil) 
-  :> 0xc5 # Case Multianewarray  (con2 :> word8 :> Nil)
-  :> 0xc6 # Case Ifnull          (offset2 :> Nil)
-  :> 0xc7 # Case Ifnonnull       (offset2 :> Nil)
-  :> 0xc8 # Case Goto_w          (offset4 :> Nil) 
-  :> 0xc9 # Case Jsr_w           (offset4 :> Nil)
-  :> 0xca # Case Breakpoint      Nil   
-  :> 0xfe # Case Impdep1         Nil   
-  :> 0xff # Case Impdep2         Nil
+instruction = tagged word8 (EliminatorWrapper . elim_Instruction)
+  $  0x00 # alt Nop             Nil
+  :> 0x01 # alt Aconst_null     Nil
+  :> 0x02 # alt Iconst_m1       Nil
+  :> 0x03 # alt Iconst_0        Nil
+  :> 0x04 # alt Iconst_1        Nil
+  :> 0x05 # alt Iconst_2        Nil
+  :> 0x06 # alt Iconst_3        Nil
+  :> 0x07 # alt Iconst_4        Nil
+  :> 0x08 # alt Iconst_5        Nil
+  :> 0x09 # alt Lconst_0        Nil
+  :> 0x0a # alt Lconst_1        Nil
+  :> 0x0b # alt Fconst_0        Nil
+  :> 0x0c # alt Fconst_1        Nil
+  :> 0x0d # alt Fconst_2        Nil
+  :> 0x0e # alt Dconst_0        Nil
+  :> 0x0f # alt Dconst_1        Nil
+  :> 0x10 # alt Bipush          (word8 :> Nil)    
+  :> 0x11 # alt Sipush          (word16be :> Nil)    
+  :> 0x12 # alt Ldc             (con1 :> Nil)    
+  :> 0x13 # alt Ldc_w           (con2 :> Nil)    
+  :> 0x14 # alt Ldc2_w          (con2 :> Nil)    
+  :> 0x15 # alt Iload           (var1 :> Nil)
+  :> 0x16 # alt Lload           (var1 :> Nil)
+  :> 0x17 # alt Fload           (var1 :> Nil)
+  :> 0x18 # alt Dload           (var1 :> Nil)
+  :> 0x19 # alt Aload           (var1 :> Nil)
+  :> 0x1a # alt Iload_0         Nil
+  :> 0x1b # alt Iload_1         Nil
+  :> 0x1c # alt Iload_2         Nil
+  :> 0x1d # alt Iload_3         Nil
+  :> 0x1e # alt Lload_0         Nil
+  :> 0x1f # alt Lload_1         Nil
+  :> 0x20 # alt Lload_2         Nil
+  :> 0x21 # alt Lload_3         Nil
+  :> 0x22 # alt Fload_0         Nil
+  :> 0x23 # alt Fload_1         Nil
+  :> 0x24 # alt Fload_2         Nil
+  :> 0x25 # alt Fload_3         Nil
+  :> 0x26 # alt Dload_0         Nil
+  :> 0x27 # alt Dload_1         Nil
+  :> 0x28 # alt Dload_2         Nil
+  :> 0x29 # alt Dload_3         Nil
+  :> 0x2a # alt Aload_0         Nil
+  :> 0x2b # alt Aload_1         Nil
+  :> 0x2c # alt Aload_2         Nil
+  :> 0x2d # alt Aload_3         Nil
+  :> 0x2e # alt Iaload          Nil
+  :> 0x2f # alt Laload          Nil
+  :> 0x30 # alt Faload          Nil
+  :> 0x31 # alt Daload          Nil
+  :> 0x32 # alt Aaload          Nil
+  :> 0x33 # alt Baload          Nil
+  :> 0x34 # alt Caload          Nil
+  :> 0x35 # alt Saload          Nil
+  :> 0x36 # alt Istore          (var1 :> Nil)
+  :> 0x37 # alt Lstore          (var1 :> Nil)   
+  :> 0x38 # alt Fstore          (var1 :> Nil)  
+  :> 0x39 # alt Dstore          (var1 :> Nil)  
+  :> 0x3a # alt Astore          (var1 :> Nil)  
+  :> 0x3b # alt Istore_0        Nil
+  :> 0x3c # alt Istore_1        Nil
+  :> 0x3d # alt Istore_2        Nil
+  :> 0x3e # alt Istore_3        Nil
+  :> 0x3f # alt Lstore_0        Nil
+  :> 0x40 # alt Lstore_1        Nil
+  :> 0x41 # alt Lstore_2        Nil
+  :> 0x42 # alt Lstore_3        Nil
+  :> 0x43 # alt Fstore_0        Nil
+  :> 0x44 # alt Fstore_1        Nil
+  :> 0x45 # alt Fstore_2        Nil
+  :> 0x46 # alt Fstore_3        Nil
+  :> 0x47 # alt Dstore_0        Nil
+  :> 0x48 # alt Dstore_1        Nil
+  :> 0x49 # alt Dstore_2        Nil
+  :> 0x4a # alt Dstore_3        Nil
+  :> 0x4b # alt Astore_0        Nil
+  :> 0x4c # alt Astore_1        Nil
+  :> 0x4d # alt Astore_2        Nil
+  :> 0x4e # alt Astore_3        Nil
+  :> 0x4f # alt Iastore         Nil
+  :> 0x50 # alt Lastore         Nil
+  :> 0x51 # alt Fastore         Nil
+  :> 0x52 # alt Dastore         Nil
+  :> 0x53 # alt Aastore         Nil
+  :> 0x54 # alt Bastore         Nil
+  :> 0x55 # alt Castore         Nil
+  :> 0x56 # alt Sastore         Nil
+  :> 0x57 # alt Pop             Nil
+  :> 0x58 # alt Pop2            Nil
+  :> 0x59 # alt Dup             Nil
+  :> 0x5a # alt Dup_x1          Nil
+  :> 0x5b # alt Dup_x2          Nil
+  :> 0x5c # alt Dup2            Nil
+  :> 0x5d # alt Dup2_x1         Nil
+  :> 0x5e # alt Dup2_x2         Nil
+  :> 0x5f # alt Swap            Nil
+  :> 0x60 # alt Iadd            Nil
+  :> 0x61 # alt Ladd            Nil
+  :> 0x62 # alt Fadd            Nil
+  :> 0x63 # alt Dadd            Nil
+  :> 0x64 # alt Isub            Nil
+  :> 0x65 # alt Lsub            Nil
+  :> 0x66 # alt Fsub            Nil
+  :> 0x67 # alt Dsub            Nil
+  :> 0x68 # alt Imul            Nil
+  :> 0x69 # alt Lmul            Nil
+  :> 0x6a # alt Fmul            Nil
+  :> 0x6b # alt Dmul            Nil
+  :> 0x6c # alt Idiv            Nil
+  :> 0x6d # alt Ldiv            Nil
+  :> 0x6e # alt Fdiv            Nil
+  :> 0x6f # alt Ddiv            Nil
+  :> 0x70 # alt Irem            Nil
+  :> 0x71 # alt Lrem            Nil
+  :> 0x72 # alt Frem            Nil
+  :> 0x73 # alt Drem            Nil
+  :> 0x74 # alt Ineg            Nil
+  :> 0x75 # alt Lneg            Nil
+  :> 0x76 # alt Fneg            Nil
+  :> 0x77 # alt Dneg            Nil
+  :> 0x78 # alt Ishl            Nil
+  :> 0x79 # alt Lshl            Nil
+  :> 0x7a # alt Ishr            Nil
+  :> 0x7b # alt Lshr            Nil
+  :> 0x7c # alt Iushr           Nil
+  :> 0x7d # alt Lushr           Nil
+  :> 0x7e # alt Iand            Nil
+  :> 0x7f # alt Land            Nil
+  :> 0x80 # alt Ior             Nil
+  :> 0x81 # alt Lor             Nil
+  :> 0x82 # alt Ixor            Nil
+  :> 0x83 # alt Lxor            Nil
+  :> 0x84 # alt Iinc            (var1 :> int8 :> Nil)
+  :> 0x85 # alt I2l             Nil
+  :> 0x86 # alt I2f             Nil
+  :> 0x87 # alt I2d             Nil
+  :> 0x88 # alt L2i             Nil
+  :> 0x89 # alt L2f             Nil
+  :> 0x8a # alt L2d             Nil
+  :> 0x8b # alt F2i             Nil
+  :> 0x8c # alt F2l             Nil
+  :> 0x8d # alt F2d             Nil
+  :> 0x8e # alt D2i             Nil
+  :> 0x8f # alt D2l             Nil
+  :> 0x90 # alt D2f             Nil
+  :> 0x91 # alt I2b             Nil
+  :> 0x92 # alt I2c             Nil
+  :> 0x93 # alt I2s             Nil
+  :> 0x94 # alt Lcmp            Nil
+  :> 0x95 # alt Fcmpl           Nil
+  :> 0x96 # alt Fcmpg           Nil
+  :> 0x97 # alt Dcmpl           Nil
+  :> 0x98 # alt Dcmpg           Nil
+  :> 0x99 # alt Ifeq            (offset2 :> Nil)
+  :> 0x9a # alt Ifne            (offset2 :> Nil)
+  :> 0x9b # alt Iflt            (offset2 :> Nil)
+  :> 0x9c # alt Ifge            (offset2 :> Nil)
+  :> 0x9d # alt Ifgt            (offset2 :> Nil)
+  :> 0x9e # alt Ifle            (offset2 :> Nil)
+  :> 0x9f # alt If_icmpeq       (offset2 :> Nil)
+  :> 0xa0 # alt If_icmpne       (offset2 :> Nil)
+  :> 0xa1 # alt If_icmplt       (offset2 :> Nil)
+  :> 0xa2 # alt If_icmpge       (offset2 :> Nil)
+  :> 0xa3 # alt If_icmpgt       (offset2 :> Nil)
+  :> 0xa4 # alt If_icmple       (offset2 :> Nil)
+  :> 0xa5 # alt If_acmpeq       (offset2 :> Nil)
+  :> 0xa6 # alt If_acmpne       (offset2 :> Nil)
+  :> 0xa7 # alt Goto            (offset2 :> Nil)
+  :> 0xa8 # alt Jsr             (offset2 :> Nil)
+  :> 0xa9 # alt Ret             (var1 :> Nil)
+  :> 0xaa # tableswitch
+  :> 0xab # lookupswitch
+  :> 0xac # alt Ireturn         Nil
+  :> 0xad # alt Lreturn         Nil
+  :> 0xae # alt Freturn         Nil
+  :> 0xaf # alt Dreturn         Nil
+  :> 0xb0 # alt Areturn         Nil
+  :> 0xb1 # alt Return          Nil
+  :> 0xb2 # alt Getstatic       (con2 :> Nil)
+  :> 0xb3 # alt Putstatic       (con2 :> Nil)
+  :> 0xb4 # alt Getfield        (con2 :> Nil)
+  :> 0xb5 # alt Putfield        (con2 :> Nil)
+  :> 0xb6 # alt Invokevirtual   (con2 :> Nil)
+  :> 0xb7 # alt Invokespecial   (con2 :> Nil)
+  :> 0xb8 # alt Invokestatic    (con2 :> Nil)
+  :> 0xb9 # alt Invokeinterface (con2 :> Nil)
+  :> 0xba # alt Invokedynamic   (con2 :> Nil)
+  :> 0xbb # alt New             (con2 :> Nil)
+  :> 0xbc # alt Newarray        (primType :> Nil) 
+  :> 0xbd # alt Anewarray       (con2 :> Nil)  
+  :> 0xbe # alt Arraylength     Nil
+  :> 0xbf # alt Athrow          Nil
+  :> 0xc0 # alt Checkcast       (con2 :> Nil) 
+  :> 0xc1 # alt Instanceof      (con2 :> Nil) 
+  :> 0xc2 # alt Monitorenter    Nil
+  :> 0xc3 # alt Monitorexit     Nil
+  :> 0xc4 # alt Wide            (wideInstruction :> Nil) 
+  :> 0xc5 # alt Multianewarray  (con2 :> word8 :> Nil)
+  :> 0xc6 # alt Ifnull          (offset2 :> Nil)
+  :> 0xc7 # alt Ifnonnull       (offset2 :> Nil)
+  :> 0xc8 # alt Goto_w          (offset4 :> Nil) 
+  :> 0xc9 # alt Jsr_w           (offset4 :> Nil)
+  :> 0xca # alt Breakpoint      Nil
+  :> 0xfe # alt Impdep1         Nil
+  :> 0xff # alt Impdep2         Nil
   :> Nil
-

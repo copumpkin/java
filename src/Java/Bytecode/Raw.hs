@@ -14,18 +14,13 @@ import Data.Eliminator.TH
 
 newtype Var1 = Var1 { getVar1 :: Word8  } deriving (Eq, Show)
 newtype Var2 = Var2 { getVar2 :: Word16 } deriving (Eq, Show)
-newtype Con1 = Con1 { getCon1 :: Word8  } deriving (Eq, Show)
-newtype Con2 = Con2 { getCon2 :: Word16 } deriving (Eq, Show)
+newtype Con1 = Con1 { getCon1 :: Word8  } deriving (Eq, Ord, Show, U.Unbox, G.Vector U.Vector, GM.MVector U.MVector)
+newtype Con2 = Con2 { getCon2 :: Word16 } deriving (Eq, Ord, Show, U.Unbox, G.Vector U.Vector, GM.MVector U.MVector)
 newtype Offset2 = Offset2 { getOffset2 :: Int16 } deriving (Eq, Show, U.Unbox, G.Vector U.Vector, GM.MVector U.MVector)
 newtype Offset4 = Offset4 { getOffset4 :: Int32 } deriving (Eq, Show, U.Unbox, G.Vector U.Vector, GM.MVector U.MVector)
 
 data PrimType = T_Boolean | T_Char | T_Float | T_Double | T_Byte | T_Short | T_Int | T_Long
-  deriving (Eq, Show, Enum)
-
--- These things have special serialization formats and my pickler framework can't handle them unless I 
--- make them separate types. TODO: figure out nicer picklers!
-data Table  = Table  { tableDef  :: !Offset4, low :: !Int32, offsets :: !(U.Vector Offset4) } deriving (Eq, Show)
-data Lookup = Lookup { lookupDef :: !Offset4, pairs :: !(U.Vector (Int32, Offset4)) } deriving (Eq, Show)
+  deriving (Eq, Show)
 
 data Instruction
   = Nop
@@ -118,8 +113,8 @@ data Instruction
   | Jsr  !Offset2     
   | Ret  !Var1
 
-  | Tableswitch  !Table
-  | Lookupswitch !Lookup
+  | Tableswitch  !Offset4 !Int32 !(U.Vector Offset4)
+  | Lookupswitch !Offset4 !(U.Vector (Int32, Offset4))
 
   | Ireturn | Lreturn | Freturn | Dreturn | Areturn | Return
 
