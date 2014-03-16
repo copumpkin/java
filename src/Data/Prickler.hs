@@ -248,6 +248,19 @@ float = error "foo"
 double :: Prickler Double
 double = error "bar"
 
+delimited :: Integral i => Prickler i -> Prickler a -> Prickler a
+delimited (Prickler gi pi) (Prickler ga pa) = Prickler getter putter
+  where
+  getter = do
+    len <- gi
+    bs  <- getLazyByteString (fromIntegral len)
+    return $ runGet ga bs
+
+  putter xs = undefined
+
+all :: G.Vector v a => Prickler a -> Prickler (v a)
+all = undefined
+
 byteString :: Integral i => Prickler i -> Prickler BL.ByteString
 byteString (Prickler gi pi) = Prickler getter putter
   where

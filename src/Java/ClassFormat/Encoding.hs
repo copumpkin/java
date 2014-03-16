@@ -4,6 +4,7 @@ module Java.ClassFormat.Encoding where
 import Data.Char
 import Data.Word
 import Data.Maybe
+import Data.Tuple
 import Data.Monoid
 import Data.Prickler
 import qualified Data.Vector as V
@@ -75,41 +76,12 @@ attribute cpool = taggedSized con2 word32be (EliminatorWrapper . elim_Attribute)
   attr = fmap Con2 . flip M.lookup tagMap
 
   tagMap :: M.Map BL.ByteString Word16
-  tagMap = M.fromList . mapMaybe (\(i, x) -> fmap (flip (,) i) (x ^? _Utf8)) . zip [1..] . V.toList $ cpool
+  tagMap = M.fromList . mapMaybe (_1 (^? _Utf8) $) . flip zip [1..] . V.toList $ cpool
 
 -- attribute = undefined
 
 entity        attribute = untagged elim_Entity        . alt Entity        $ word16be :> con2 :> con2 :> gvector word16be attribute :> Nil
 codeAttribute attribute = untagged elim_CodeAttribute . alt CodeAttribute $ word16be :> word16be :> byteString word32be :> gvector word16be exception :> gvector word16be attribute :> Nil
-
-
-
-
-{-
-data Attribute
-  = ConstantValue Con2
-  | Code !CodeAttribute
-  | StackMapTable
-  | Exceptions !(V.Vector Con2)
-  | InnerClasses !(V.Vector InnerClass)
-  | EnclosingMethod !Con2 !Con2
-  | Synthetic -- empty
-  | Signature !Con2
-  | SourceFile !Con2
-  | SourceDebugExtension !B.ByteString
-  | LineNumberTable !(U.Vector (Word16, Word16))
-  | LocalVariableTable !(V.Vector LocalVariable)
-  | LocalVariableTypeTable !(V.Vector LocalVariable)
-  | Deprecated -- empty
-  | RuntimeVisibleAnnotations !(V.Vector Annotation)
-  | RuntimeInvisibleAnnotations !(V.Vector Annotation)
-  | RuntimeVisibleParameterAnnotations !(V.Vector (V.Vector Annotation))
-  | RuntimeInvisibleParameterAnnotations !(V.Vector (V.Vector Annotation))
-  | AnnotationDefault !Value
-  | BootstrapMethods
-  | Custom B.ByteString
--}
-
 
 
 referenceKind = tagged word8 (EliminatorWrapper . elim_ReferenceKind)
@@ -175,7 +147,7 @@ klass :: Prickler Class
 klass = skip (expect 0xcafebabe word32be) basicClass
 
 test = do
-  x <- BL.readFile "/Users/copumpkin/Sandbox/Scala/tinker/target/scala-2.10/classes/tinker/optimized/Main$.class"
+  x <- BL.readFile "/Users/copumpkin/Sandbox/Scala/tinker/target/scala-2.10/classes/tinker/optimized/Main$$anon$1.class"
   putStrLn (ppShow $ runGet (get klass) x)
 
 
