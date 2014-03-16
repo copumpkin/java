@@ -9,6 +9,7 @@ import qualified Data.ByteString as B
 import qualified Data.ByteString.Lazy as BL
 import qualified Data.Vector as V
 import qualified Data.Vector.Unboxed as U
+import qualified Data.IntMap as IM
 
 import Control.Lens.TH
 
@@ -141,7 +142,7 @@ data Entity = Entity { entityAccessFlags :: !Word16, entityName :: !Con2, entity
 data Class = Class
   { majorVersion      :: {-# UNPACK #-} !Word16
   , minorVersion      :: {-# UNPACK #-} !Word16
-  , constantPool      :: !(V.Vector Constant)
+  , constantPool      :: !(IM.IntMap Constant)
   , classAccessFlags  :: {-# UNPACK #-} !Word16
   , className         :: {-# UNPACK #-} !Con2
   , superClassName    :: {-# UNPACK #-} !Con2

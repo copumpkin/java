@@ -14,6 +14,8 @@ import Control.Monad
 import qualified Data.ByteString.Lazy as BL
 import Control.Lens hiding ((#), Indexed)
 import qualified Data.Map as M
+import qualified Data.IntMap as IM
+import Debug.Trace
 
 import Java.ClassFormat.Raw hiding (constantPool, interfaces, fields, methods, attributes)
 import Java.Bytecode.Raw
@@ -44,39 +46,42 @@ innerClass    = untagged elim_InnerClass    . alt InnerClass    $ con2 :> con2 :
 localVariable = untagged elim_LocalVariable . alt LocalVariable $ word16be :> word16be :> con2 :>con2 :> word16be :> Nil
 
 
-attribute cpool = taggedSized con2 word32be (EliminatorWrapper . elim_Attribute)
-  $  attr "ConstantValue"                        #? alt ConstantValue                        (con2 :> Nil)
-  :> attr "Code"                                 #? alt Code                                 (codeAttribute (attribute cpool) :> Nil) -- fix?
-  :> attr "StackMapTable"                        #? alt StackMapTable                        Nil
-  :> attr "Exceptions"                           #? alt Exceptions                           (gvector word16be con2 :> Nil)
-  :> attr "InnerClasses"                         #? alt InnerClasses                         (gvector word16be innerClass :> Nil)
-  :> attr "EnclosingMethod"                      #? alt EnclosingMethod                      (con2 :> con2 :> Nil)
-  :> attr "Synthetic"                            #? alt Synthetic                            Nil
-  :> attr "Signature"                            #? alt Signature                            (con2 :> Nil)
-  :> attr "SourceFile"                           #? alt SourceFile                           (con2 :> Nil)
-  :> attr "SourceDebugExtension"                 #? alt SourceDebugExtension                 (remainingByteString :> Nil)
-  :> attr "LineNumberTable"                      #? alt LineNumberTable                      (gvector word16be (pair word16be word16be) :> Nil)
-  :> attr "LocalVariableTable"                   #? alt LocalVariableTable                   (gvector word16be localVariable :> Nil)
-  :> attr "LocalVariableTypeTable"               #? alt LocalVariableTypeTable               (gvector word16be localVariable :> Nil)
-  :> attr "Deprecated"                           #? alt Deprecated                           Nil
-  :> attr "RuntimeVisibleAnnotations"            #? alt RuntimeVisibleAnnotations            (gvector word16be annotation :> Nil)
-  :> attr "RuntimeInvisibleAnnotations"          #? alt RuntimeInvisibleAnnotations          (gvector word16be annotation :> Nil)
-  :> attr "RuntimeVisibleParameterAnnotations"   #? alt RuntimeVisibleParameterAnnotations   (gvector word8 (gvector word16be annotation) :> Nil)
-  :> attr "RuntimeInvisibleParameterAnnotations" #? alt RuntimeInvisibleParameterAnnotations (gvector word8 (gvector word16be annotation) :> Nil)
-  :> attr "AnnotationDefault"                    #? alt AnnotationDefault                    (value :> Nil)
-  :> attr "BootstrapMethods"                     #? alt BootstrapMethods                     Nil
-  :> attr "Scala"                                #? alt Custom                               (remainingByteString :> Nil) -- TODO: add catchall
-  :> Nil  
+attribute :: IM.IntMap Constant -> Prickler Attribute
+attribute cpool = inner
   where
+  inner = taggedSized con2 word32be (EliminatorWrapper . elim_Attribute)
+    $  attr "ConstantValue"                        #? alt ConstantValue                        (con2 :> Nil)
+    :> attr "Code"                                 #? alt Code                                 (codeAttribute inner :> Nil)
+    :> attr "StackMapTable"                        #? alt StackMapTable                        Nil
+    :> attr "Exceptions"                           #? alt Exceptions                           (gvector word16be con2 :> Nil)
+    :> attr "InnerClasses"                         #? alt InnerClasses                         (gvector word16be innerClass :> Nil)
+    :> attr "EnclosingMethod"                      #? alt EnclosingMethod                      (con2 :> con2 :> Nil)
+    :> attr "Synthetic"                            #? alt Synthetic                            Nil
+    :> attr "Signature"                            #? alt Signature                            (con2 :> Nil)
+    :> attr "SourceFile"                           #? alt SourceFile                           (con2 :> Nil)
+    :> attr "SourceDebugExtension"                 #? alt SourceDebugExtension                 (remainingByteString :> Nil)
+    :> attr "LineNumberTable"                      #? alt LineNumberTable                      (gvector word16be (pair word16be word16be) :> Nil)
+    :> attr "LocalVariableTable"                   #? alt LocalVariableTable                   (gvector word16be localVariable :> Nil)
+    :> attr "LocalVariableTypeTable"               #? alt LocalVariableTypeTable               (gvector word16be localVariable :> Nil)
+    :> attr "Deprecated"                           #? alt Deprecated                           Nil
+    :> attr "RuntimeVisibleAnnotations"            #? alt RuntimeVisibleAnnotations            (gvector word16be annotation :> Nil)
+    :> attr "RuntimeInvisibleAnnotations"          #? alt RuntimeInvisibleAnnotations          (gvector word16be annotation :> Nil)
+    :> attr "RuntimeVisibleParameterAnnotations"   #? alt RuntimeVisibleParameterAnnotations   (gvector word8 (gvector word16be annotation) :> Nil)
+    :> attr "RuntimeInvisibleParameterAnnotations" #? alt RuntimeInvisibleParameterAnnotations (gvector word8 (gvector word16be annotation) :> Nil)
+    :> attr "AnnotationDefault"                    #? alt AnnotationDefault                    (value :> Nil)
+    :> attr "BootstrapMethods"                     #? alt BootstrapMethods                     Nil
+    :> attr "Scala"                                #? alt Custom                               (remainingByteString :> Nil) -- TODO: add catchall
+    :> Nil  
+  
   (#?) :: Maybe Con2 -> Partial Put Get Attribute ts -> Indexed Con2 (Partial Put Get Attribute) ts
   Nothing #? a = Con2 0 # Partial (fail "failed") (error "failed") (error "failed")
   Just c  #? a = c # a
 
   attr :: BL.ByteString -> Maybe Con2
-  attr = fmap Con2 . flip M.lookup tagMap
+  attr = traceShow tagMap $ fmap Con2 . flip M.lookup tagMap
 
   tagMap :: M.Map BL.ByteString Word16
-  tagMap = M.fromList . mapMaybe (_1 (^? _Utf8) $) . flip zip [1..] . V.toList $ cpool
+  tagMap = M.fromList . map (fmap fromIntegral . swap) . mapMaybe (_2 (^? _Utf8) $) . IM.toList $ cpool
 
 -- attribute = undefined
 
@@ -113,11 +118,25 @@ constant = tagged word8 (EliminatorWrapper . elim_Constant)
   :> 18 # alt InvokeDynamic      (word16be :> con2 :> Nil)
   :> Nil
 
-constantPool :: Prickler (V.Vector Constant)
+constantPool :: Prickler (IM.IntMap Constant)
 constantPool = Prickler getter putter
   where
-  getter    = do len <- getWord16be; V.replicateM (fromIntegral len- 1) (get constant)
-  putter xs = put word16be (fromIntegral (V.length xs)) <> V.mapM_ (put constant) xs
+  listGetter :: Int -> Int -> Get [(Int, Constant)]
+  listGetter 0 off = pure []
+  listGetter n off = do
+    x   <- get constant
+    let delta = size x
+    xs  <- listGetter (n - delta) (off + delta)
+    return ((off, x) : xs)
+
+  getter    = do len <- getWord16be; IM.fromList <$> listGetter (fromIntegral len - 1) 1
+  putter xs = put word16be (fromIntegral . sum $ map (size . snd) flat) <> mapM_ (put constant . snd) flat
+    where flat = IM.toAscList xs
+
+  size :: Constant -> Int
+  size (Long   _) = 2
+  size (Double _) = 2
+  size _ = 1
 
 basicClass :: Prickler Class
 basicClass = Prickler getter putter
@@ -125,7 +144,7 @@ basicClass = Prickler getter putter
   getter = do
     maj   <- get word16be
     min   <- get word16be
-    cons  <- get constantPool -- this should really be completely synthetic...
+    cons  <- get constantPool -- this should really be at least partially synthetic...
     flags <- get word16be
     cname <- get con2
     sname <- get con2
@@ -147,7 +166,7 @@ klass :: Prickler Class
 klass = skip (expect 0xcafebabe word32be) basicClass
 
 test = do
-  x <- BL.readFile "/Users/copumpkin/Sandbox/Scala/tinker/target/scala-2.10/classes/tinker/optimized/Main$$anon$1.class"
+  x <- BL.readFile "/Users/copumpkin/Sandbox/Haskell/java/test/Test.class"
   putStrLn (ppShow $ runGet (get klass) x)
 
 

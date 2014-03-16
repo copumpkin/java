@@ -16,11 +16,13 @@ import Data.Monoid hiding (Sum, Product, All)
 import Data.Binary.Get hiding (Done, Partial, skip)
 import qualified Data.Binary.Get as Get
 import Data.Binary.Builder
+import Data.Binary.IEEE754
 import qualified Data.Map as M
 import Data.ByteString.Base16
 import qualified Data.ByteString.Lazy as BL
 import qualified Data.Vector.Generic as G
 import Control.Monad
+import Debug.Trace
 
 import Data.Int
 import Data.Word
@@ -107,7 +109,7 @@ data State a = State { written :: {-# UNPACK #-} !Int64, builder :: !Builder, co
 instance Functor State where
   fmap f (State w b v) = State w b (f v)
 
-newtype PutM a = PutM { runPut :: Int64 -> State a }
+newtype PutM a = PutM { runPutM :: Int64 -> State a }
 
 instance Functor PutM where
   fmap f (PutM g) = PutM (fmap f . g)
@@ -170,7 +172,7 @@ tagged (Prickler gi pi) elim sum = Prickler getter (merged (mapAll (adjust pi) s
       Just (Exists (Partial maker _ _)) -> maker
 
 
-taggedSized :: (Show i, Ord i, Integral s) => Prickler i -> Prickler s -> (forall r. a -> EliminatorWrapper ts r) -> All (Indexed i (Partial Put Get a)) ts -> Prickler a
+taggedSized :: (Ord i, Integral s) => Prickler i -> Prickler s -> (forall r. a -> EliminatorWrapper ts r) -> All (Indexed i (Partial Put Get a)) ts -> Prickler a
 taggedSized (Prickler gi pi) (Prickler gs ps) elim sum = Prickler getter (merged (mapAll (adjust pi) sum) . elim)
   where
   merged :: All ((:<-@) r) ts -> EliminatorWrapper ts r -> r
@@ -186,7 +188,7 @@ taggedSized (Prickler gi pi) (Prickler gs ps) elim sum = Prickler getter (merged
     tag  <- gi
     size <- gs
     case M.lookup tag ps of
-      Nothing                           -> fail $ "Invalid tag! " ++ show tag
+      Nothing                           -> fail $ "Invalid tag!"
       Just (Exists (Partial maker _ _)) -> do
         bs <- getLazyByteString (fromIntegral size)
         return $ runGet maker bs
@@ -243,10 +245,10 @@ int64be = wrap fromIntegral fromIntegral word64be
 int64le = wrap fromIntegral fromIntegral word64le
 
 float :: Prickler Float
-float = error "foo"
+float = Prickler getFloat32be (const (error "not yet implemented"))
 
 double :: Prickler Double
-double = error "bar"
+double = Prickler getFloat64be (const (error "not yet implemented"))
 
 delimited :: Integral i => Prickler i -> Prickler a -> Prickler a
 delimited (Prickler gi pi) (Prickler ga pa) = Prickler getter putter
@@ -256,21 +258,24 @@ delimited (Prickler gi pi) (Prickler ga pa) = Prickler getter putter
     bs  <- getLazyByteString (fromIntegral len)
     return $ runGet ga bs
 
-  putter xs = undefined
+  putter xs = let bs = toLazyByteString (builder $ runPutM (pa xs) 0) in 
+    pi (fromIntegral $ BL.length bs) <> PutM (\w -> State (w + (fromIntegral $ BL.length bs)) (fromLazyByteString bs) ())
+
 
 all :: G.Vector v a => Prickler a -> Prickler (v a)
-all = undefined
+all (Prickler ga pa) = Prickler getter putter
+  where
+  getter = undefined
+  putter = undefined
 
 byteString :: Integral i => Prickler i -> Prickler BL.ByteString
-byteString (Prickler gi pi) = Prickler getter putter
-  where
-  getter = do len <- gi; getLazyByteString (fromIntegral len)
-  putter xs = let len = BL.length xs in pi (fromIntegral len) <> PutM (\w -> State (w + fromIntegral len) (fromLazyByteString xs) ())
+byteString pi = delimited pi remainingByteString
 
 remainingByteString :: Prickler BL.ByteString
 remainingByteString = Prickler getRemainingLazyByteString putter
   where
-  putter xs = undefined
+  putter xs = PutM (\w -> State (w + (fromIntegral $ BL.length xs)) (fromLazyByteString xs) ())
+
 
 gvector :: (Integral i, G.Vector v a) => Prickler i -> Prickler a -> Prickler (v a)
 gvector (Prickler gi pi) (Prickler ga pa) = Prickler getter putter
